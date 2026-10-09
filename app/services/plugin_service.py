@@ -1,8 +1,9 @@
 """插件服务层（阶段 3：搜索 / 分析 / 评分 / 安全审查）。
 
 已实现：注册 / 查询 / 列表 / 审计（阶段 2）+ 远程搜索 / 检查 / 评分 / 审查 / 对比（阶段 3）。
-**尚未实现**（后续阶段）：安装、回滚（阶段 5）。
-所有"未实现"的能力都显式抛 ``NotImplementedError``，绝不返回假成功。
+写操作（安装 / 回滚 / 卸载）**不在本类实现**：由 ``app.services.install_service.InstallService``
+编排（生成计划 → 用户通过受信任网页确认 → 执行 → 登记归属），本类保持纯只读 + 搜索/审查，
+任何代码路径都无法绕过用户确认直接写入。
 """
 
 from __future__ import annotations
@@ -710,13 +711,12 @@ class PluginService:
         return compare_plugins(plugins)
 
     # ------------------------------------------------------------------ #
-    # 尚未实现（显式失败，禁止伪成功）
+    # 写操作（安装 / 回滚 / 卸载）
     # ------------------------------------------------------------------ #
-    def install(self, plugin_id: str, *, actor: str) -> Plugin:
-        raise NotImplementedError("安装闭环将在阶段 5 实现")
-
-    def rollback(self, plugin_id: str, *, actor: str) -> Plugin:
-        raise NotImplementedError("回滚将在阶段 5 实现")
+    # 刻意**不**在本类提供 install / rollback / uninstall：
+    # 写操作必须经 ``app.services.install_service.InstallService`` 的
+    # 「生成计划 → 用户通过受信任网页确认 → 校验令牌 → 执行」流程，
+    # 从而保证没有任何代码路径可以绕过用户授权直接写入文件系统。
 
 
 def dump_plugin(plugin: Plugin) -> dict[str, Any]:

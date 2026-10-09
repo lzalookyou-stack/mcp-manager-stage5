@@ -22,6 +22,7 @@ def settings(tmp_path: Path):
         host="127.0.0.1",
         port=8765,
         db_path=tmp_path / "test.db",
+        data_dir=tmp_path / "data",
     )
 
 

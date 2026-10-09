@@ -6,6 +6,12 @@
 
 from __future__ import annotations
 
+from app.install.service import (
+    PLAN_TTL_SECONDS,
+    InstallService,
+    InstallServiceError,
+    InstallUnavailable,
+)
 from app.services.plugin_service import (
     AuditRecord,
     PluginNotFound,
@@ -22,4 +28,8 @@ __all__ = [
     "SearchUnavailable",
     "AuditRecord",
     "dump_plugin",
+    "InstallService",
+    "InstallServiceError",
+    "InstallUnavailable",
+    "PLAN_TTL_SECONDS",
 ]

@@ -297,6 +297,31 @@ class GitHubClient:
             raise GitHubError("releases 响应不是数组", kind="server")
         return [r for r in payload if isinstance(r, dict)]
 
+    def list_tree(
+        self, owner: str, repo: str, ref: str, *, recursive: bool = True
+    ) -> list[dict[str, Any]]:
+        """列出固定 ref 下的完整文件树（git trees API）。
+
+        返回原始条目列表（``path`` / ``type`` / ``size`` / ``sha``）；
+        调用方负责按 ``type == "blob"`` 过滤。``truncated`` 为真时**显式抛出**，
+        避免把不完整清单当成完整清单使用。
+        """
+        payload = self._request(
+            f"/repos/{owner}/{repo}/git/trees/{ref}",
+            {"recursive": "1" if recursive else None},
+        )
+        if not isinstance(payload, dict):
+            raise GitHubError("trees 响应不是对象", kind="server")
+        if payload.get("truncated") is True:
+            raise GitHubError(
+                "文件树过大，GitHub 返回了截断结果；拒绝基于不完整清单安装。",
+                kind="invalid",
+            )
+        tree = payload.get("tree")
+        if not isinstance(tree, list):
+            raise GitHubError("trees 响应缺少 tree 字段", kind="server")
+        return [e for e in tree if isinstance(e, dict)]
+
     def list_directory(self, owner: str, repo: str, path: str = "", *, ref: str | None = None) -> list[str]:
         """列出目录下的条目名（不含内容）。"""
         payload = self._request(f"/repos/{owner}/{repo}/contents/{path}", {"ref": ref})

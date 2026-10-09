@@ -128,21 +128,20 @@ def test_stats(service: PluginService):
     assert stats["by_install_status"]["not_installed"] == 1
 
 
-@pytest.mark.parametrize(
-    "method,args,kwargs",
-    [
-        # 阶段 5 才实现的能力：必须显式失败
-        # install / rollback 是 *, actor 关键字签名（刻意设计：必须记录操作者）
-        ("install", ("some-id",), {"actor": "user"}),
-        ("rollback", ("some-id",), {"actor": "user"}),
-    ],
-)
-def test_unimplemented_methods_fail_loudly(
-    service: PluginService, method: str, args: tuple, kwargs: dict
+@pytest.mark.parametrize("method", ["install", "rollback", "uninstall"])
+def test_write_methods_absent_from_plugin_service(
+    service: PluginService, method: str
 ):
-    """未实现的能力必须抛异常，绝不能返回假的成功结果。"""
-    with pytest.raises(NotImplementedError):
-        getattr(service, method)(*args, **kwargs)
+    """写操作**刻意不**暴露在 PluginService 上（阶段 5 的设计变更）。
+
+    安装 / 回滚 / 卸载必须经 ``InstallService`` 的
+    「生成计划 → 用户通过受信任网页确认 → 校验令牌 → 执行」流程。
+    直接在 PluginService 上提供写方法会形成绕过用户授权的旁路，因此这里断言
+    这些方法**不存在**（比抛 ``NotImplementedError`` 更强的保证）。
+    """
+    assert not hasattr(service, method), (
+        f"PluginService 不应提供 {method}；写操作必须经 InstallService 编排"
+    )
 
 
 def test_search_without_github_client_fails_loudly(service: PluginService):
@@ -165,6 +164,9 @@ def test_review_missing_plugin_raises(service: PluginService):
         service.review("some-id")
 
 
-def test_install_requires_actor_kwarg(service: PluginService):
-    with pytest.raises(TypeError):
-        service.install("some-id")  # type: ignore[call-arg]
+def test_install_service_is_the_only_write_path(runtime):
+    """写操作的唯一入口是 ``Runtime.installs``（InstallService）。"""
+    from app.services import InstallService
+
+    assert isinstance(runtime.installs, InstallService)
+    assert not hasattr(runtime.plugins, "install")

@@ -138,8 +138,12 @@ def test_audit_endpoint(client: TestClient):
     assert "items" in resp.json()
 
 
-def test_no_write_endpoints_exist(client: TestClient):
-    """阶段 2 必须完全没有写接口（负向断言）。"""
+def test_write_endpoints_require_authorization(client: TestClient):
+    """阶段 5 引入写接口后的负向断言（**同步更新，而非删除**）：
+
+    - 旧的非写路径仍然**不存在**（404/405）；
+    - 真实的写接口在未携带会话 Cookie / CSRF 令牌时**必须被拒绝**（403），绝不放行。
+    """
     rt = client.runtime  # type: ignore[attr-defined]
     p = rt.plugins.upsert(
         Plugin.new(source="github:o/r", slug="demo", name="演示", kind=PluginKind.SKILL),
@@ -154,6 +158,13 @@ def test_no_write_endpoints_exist(client: TestClient):
     ):
         resp = client.post(path, headers={"Origin": ORIGIN}, json={})
         assert resp.status_code in (404, 405), f"{path} 不应存在写接口，实际 {resp.status_code}"
+
+    # 真实存在的写接口：没有会话 + CSRF 时必须是 403，不能执行任何写入。
+    resp = client.post(
+        "/api/install/plan", headers={"Origin": ORIGIN}, json={"plugin_id": p.id}
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"] == "session_rejected"
 
 
 def test_stats_endpoint(client: TestClient):

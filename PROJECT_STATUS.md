@@ -23,7 +23,7 @@
 | 2 最小可运行骨架 | ✅ 已完成 | https://github.com/lzalookyou-stack/mcp-manager-stage2 | 77 项测试全绿；MCP stdio 冒烟 9 项通过；Web 实机验证通过 |
 | 3 搜索/分析/评分/安全审查 | ✅ 已完成 | https://github.com/lzalookyou-stack/mcp-manager-stage3 | 154 项测试全绿；MCP stdio 冒烟 9 项通过；Web 实机验证通过 |
 | 4 网页控制台交互 | ✅ 已完成 | https://github.com/lzalookyou-stack/mcp-manager-stage4 | 175 项测试全绿；SSE 端到端真实验证；Web 实机验证通过 |
-| 5 安全安装闭环 | ⬜ 未开始 | — | — |
+| 5 安全安装闭环 | ✅ 已完成 | https://github.com/lzalookyou-stack/mcp-manager-stage5 | 202 项测试全绿；MCP 冒烟 10 项通过；真实 HTTP 授权链路 16 项通过 |
 | 6 插件适配器 | ⬜ 未开始 | — | — |
 | 7 MCP 集成 | ⬜ 未开始 | — | — |
 | 8 完整测试与交付 | ⬜ 未开始 | — | — |
@@ -36,7 +36,7 @@
 | 2 | https://github.com/lzalookyou-stack/mcp-manager-stage2 | 交付提交 `015fdcb521eea18abba32d940ba14fec9cc992ef`；状态回填提交 `b742dcb` | ✅ 已推送（远端 `refs/heads/main` 已回读核对，33 文件树经 API 核验） |
 | 3 | https://github.com/lzalookyou-stack/mcp-manager-stage3 | 交付提交 `2d4522bece572ca836dde936d30d8da01f8e99c6`；状态回填提交 `2c8684c7b773ceb6781aabbe7009b7a86a457eb7` | ✅ 已推送（远端 `refs/heads/main` 已回读核对 = 本地 HEAD，45 blob / 11 tree，`truncated: false`） |
 | 4 | https://github.com/lzalookyou-stack/mcp-manager-stage4 | 交付提交 `ca56e1a4ec0de9e955d323b1899c2b22989e406a`；状态回填提交 `1b59dfdbc74fdf36844690ce25e1e4b11d3f1c94` | ✅ 已推送（远端 `refs/heads/main` 已回读核对 = 本地 HEAD，48 blob，`truncated: false`） |
-| 5 | （推送后回填） | （推送后回填） | — |
+| 5 | https://github.com/lzalookyou-stack/mcp-manager-stage5 | （推送后回填） | — |
 | 6 | （推送后回填） | （推送后回填） | — |
 | 7 | （推送后回填） | （推送后回填） | — |
 | 8 | （推送后回填） | （推送后回填） | — |
@@ -112,16 +112,50 @@
 
 ---
 
+## 验证基线（阶段 5）
+
+以下为**真实执行**得到的结果（非声称）：
+
+1. `pytest -q -p no:cacheprovider`：**202 passed**（阶段 5 新增 26 项，位于 `tests/test_stage5_install.py`）。
+2. `scripts/smoke_mcp_stdio.py`：**10 项 PASS，退出码 0**；其中包含关键安全断言「Agent 响应中不含任何确认令牌」。
+3. `scripts/verify_stage5_http.sh`（真实 uvicorn + curl）：**16 项 PASS**，覆盖：
+   - `GET /` 200 且 CSP 不含 `unsafe-inline`；
+   - 无会话写请求 → 403 `session_rejected`；
+   - 错误 CSRF → 403；无 Origin 的 POST → 403 `csrf_origin_rejected`；
+   - 完整授权链路：会话 → 计划（`awaiting_confirmation`）→ 确认（拿到一次性令牌）→ 执行（`succeeded`）；
+   - 已用令牌复用 → 409；
+   - 只读接口不泄露令牌明文，且含步骤日志。
+
+关键安全性质（已在测试中断言）：
+
+- 计划生成**不产生任何文件写入**；
+- 无固定 commit → 拒绝生成计划；安全审查 `vetoed` → 拒绝生成计划；
+- 确认令牌：一次性、常量时间比较、有 TTL、绑定计划摘要（计划变化即失效）；
+- 执行前**重新验证**令牌与当前计划一致；
+- 失败即 `failed` 并回滚，绝不残留半成品；
+- 崩溃遗留的 `running` / `rolling_back` 事务标记为 `interrupted`，**绝不视为成功**；
+- 卸载只删除归属台账中登记且位于受管根目录内的文件（越界路径绝不删除）；
+- `run_command` 拒绝字符串命令、拒绝越界 cwd、`shell=False` 下 `;` 不被解释为命令分隔符、超时可控。
+
+---
+
 ## 未实现（**严禁声称已实现**）
 
-以下能力在阶段 3 **确实不存在**，调用会显式失败（`NotImplementedError` / `SearchUnavailable` 或返回 `not_implemented`）：
+以下能力在阶段 5 **确实不存在**，调用会显式失败（`NotImplementedError` / `SearchUnavailable` / `InstallUnavailable` 或返回 `not_found` / `plan_rejected`）：
 
-- `PluginService.install` / `rollback`：仍 `raise NotImplementedError`（阶段 5 实现）。
+- `PluginService` **不再提供** `install` / `rollback` / `uninstall`（阶段 5 已移除占位方法）。
+  写操作的唯一入口是 `app.install.service.InstallService`，必须走「生成计划 → 用户通过受信任网页确认 → 校验令牌 → 执行」。
+  没有任何代码路径可以绕过用户授权直接写入文件系统（`tests/test_plugin_service.py::test_write_methods_absent_from_plugin_service` 断言这些方法**不存在**）。
 - `PluginService.search_remote` / `inspect_remote` / `review` / `score` / `compare`：**已在阶段 3 实现**；但在**未配置 GitHub 令牌**时 `search_remote` 会抛 `SearchUnavailable`（显式失败，**不会**返回空列表被误读为「没有结果」）。
-- Web 层**没有任何写接口**（阶段 5 引入，届时必须带会话与 CSRF 令牌）；`tests/test_web.py::test_no_write_endpoints_exist` 与 `tests/test_web_stage4.py::test_no_write_endpoints_still_true` 均为负向断言。
-- Web 层**没有 SSE 实时推送之外的任务表**：`/api/tasks` 直接读取审计日志；安装类任务（含进度/日志/结果）在阶段 5 出现。
-- MCP 工具 `request_install` **不产生任何安装行为**，恒返回 `{"ok": false, "error": "not_implemented"}` 并写 `actor=agent, outcome=denied` 审计。
+- Web 层**已有写接口**（阶段 5 引入），但全部要求「同源 Origin + 会话 Cookie（HttpOnly/SameSite=Strict）+ CSRF 令牌」三件套；
+  未授权访问一律 403（`session_rejected` / `csrf_origin_rejected`）。负向断言**已同步更新而非删除**：
+  `tests/test_web.py::test_write_endpoints_require_authorization` 与 `tests/test_web_stage4.py::test_no_write_endpoints_still_true`。
+- Web 层现有独立**操作表**（`operations` / `operation_logs` / `confirmations` / `snapshots` / `file_ownership`）：
+  `/api/operations`（列表）与 `/api/operations/{id}`（详情 + 确认状态 + 步骤日志）为只读；`/api/tasks` 仍读取审计日志。
+- MCP 工具 `request_install` **不产生任何安装行为**：它只生成「等待用户确认」的安装计划（`ok: true, status: awaiting_confirmation`）；
+  未知条目返回 `not_found`，计划被拒返回 `plan_rejected`。Agent **无法**确认或执行，响应中**不含**任何确认令牌。
 - 无插件适配器（阶段 6）。
+- 计划中的 `commands` 恒为空：本系统**默认禁止**自动执行仓库内安装脚本。
 - 本项目自身**尚无 LICENSE**（阶段 8 前确认）。
 - 安全审查为**静态模式匹配**：必然存在漏报，未命中**不代表**安全。
 

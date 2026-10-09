@@ -48,10 +48,27 @@ class Settings:
     allow_non_loopback: bool
     max_request_bytes: int
 
+    # --- 阶段 5：安装闭环 ---
+    install_enabled: bool
+    confirmation_ttl_seconds: int
+    session_ttl_seconds: int
+
     # ------------------------------------------------------------------ #
     @property
     def is_loopback(self) -> bool:
         return self.host in _LOOPBACK_HOSTS
+
+    @property
+    def plugins_root(self) -> Path:
+        return self.data_dir / "plugins"
+
+    @property
+    def snapshots_root(self) -> Path:
+        return self.data_dir / "snapshots"
+
+    @property
+    def config_root(self) -> Path:
+        return self.data_dir / "config"
 
     def validate(self) -> None:
         """启动前自检；不满足安全基线时抛出异常，绝不静默降级。"""
@@ -62,12 +79,17 @@ class Settings:
             )
         if not (1 <= self.port <= 65535):
             raise RuntimeError(f"端口非法：{self.port}")
+        # 写操作（安装/回滚）在非回环暴露下必须显式放开，否则拒绝启动。
+        if not self.is_loopback and self.install_enabled and not self.allow_non_loopback:
+            raise RuntimeError("非回环地址下不允许启用安装写操作")
 
 
 def load_settings(**overrides: object) -> Settings:
     """加载配置。``overrides`` 用于测试注入，避免污染环境变量。"""
     data_dir = Path(
-        os.environ.get("MCPM_DATA_DIR", str(PROJECT_ROOT / "var"))
+        overrides.get("data_dir")
+        or os.environ.get("MCPM_DATA_DIR")
+        or str(PROJECT_ROOT / "var")
     ).expanduser()
     host = str(overrides.get("host") or os.environ.get("MCPM_HOST", "127.0.0.1"))
     port = int(overrides.get("port") or _env_int("MCPM_PORT", 8765))
@@ -93,6 +115,19 @@ def load_settings(**overrides: object) -> Settings:
         allowed_origins=allowed_origins,
         allow_non_loopback=_env_bool("MCPM_ALLOW_NON_LOOPBACK", False),
         max_request_bytes=_env_int("MCPM_MAX_REQUEST_BYTES", 1_048_576),
+        install_enabled=bool(
+            overrides.get("install_enabled")
+            if overrides.get("install_enabled") is not None
+            else _env_bool("MCPM_ENABLE_INSTALL", True)
+        ),
+        confirmation_ttl_seconds=int(
+            overrides.get("confirmation_ttl_seconds")
+            or _env_int("MCPM_CONFIRMATION_TTL", 1800)
+        ),
+        session_ttl_seconds=int(
+            overrides.get("session_ttl_seconds")
+            or _env_int("MCPM_SESSION_TTL", 3600)
+        ),
     )
     settings.validate()
     return settings

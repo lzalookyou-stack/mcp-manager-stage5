@@ -84,3 +84,27 @@ def sanitize_for_log(value: object, *, max_len: int = 200) -> str:
     if len(text) > max_len:
         text = text[:max_len] + "…"
     return text
+
+
+# --------------------------------------------------------------------------- #
+# 阶段 5：与来源无关的结构性校验
+# --------------------------------------------------------------------------- #
+
+# 这些前缀的 URL 不作为安装来源（拒绝非显式来源）
+_ALLOWED_SOURCES = ("github:",)
+
+
+def require_github_source(source: str) -> str:
+    """安装来源必须是显式的 ``github:`` 来源，否则拒绝。"""
+    if not isinstance(source, str) or not source.startswith(_ALLOWED_SOURCES):
+        raise SecurityError(f"安装来源必须是 github: 形式，实际为 {source!r}")
+    return source
+
+
+def reject_shell_metacharacters_ignored() -> None:  # pragma: no cover - 明确留痕
+    """**故意留空**：本系统不把 shell 元字符正则当作安全控制。
+
+    真正的控制是「结构化 argv + ``shell=False``」（见 ``app.install.exec``），
+    而不是"过滤掉 ``;`` 和 ``|``"这种可被绕过的做法。
+    """
+    return None

@@ -115,7 +115,8 @@ def main() -> int:
         payload = json.loads(content[0]["text"]) if content else {}
         check("get_stats 返回 ok", payload.get("ok") is True, str(payload)[:120])
 
-        # 关键安全断言：Agent 调用 request_install 必须被拒绝（阶段 2 未实现）
+        # 关键安全断言：Agent 调用 request_install 只能**申请**，绝不能执行安装，
+        # 也绝不能拿到任何确认令牌。未知条目必须显式失败（not_found），不得伪成功。
         call2 = client.request(
             "tools/call",
             {
@@ -126,10 +127,14 @@ def main() -> int:
         content2 = call2.get("result", {}).get("content", [])
         payload2 = json.loads(content2[0]["text"]) if content2 else {}
         check(
-            "Agent 的安装申请被拒绝（未实现）",
-            payload2.get("ok") is False
-            and payload2.get("error") == "not_implemented",
+            "Agent 的安装申请对未知条目显式失败",
+            payload2.get("ok") is False and payload2.get("error") == "not_found",
             str(payload2)[:120],
+        )
+        check(
+            "Agent 响应中不含任何确认令牌",
+            "confirmation_token" not in payload2 and "token" not in payload2,
+            str(sorted(payload2.keys())),
         )
     finally:
         client.close()

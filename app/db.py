@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -52,6 +52,76 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+
+-- ===================== 阶段 5：安全安装闭环 =====================
+
+-- 安装 / 回滚 / 卸载 事务（状态机见 docs/architecture.md 第 4 节）
+CREATE TABLE IF NOT EXISTS operations (
+    id           TEXT PRIMARY KEY,
+    plugin_id    TEXT NOT NULL,
+    action       TEXT NOT NULL,          -- install | rollback | uninstall
+    status       TEXT NOT NULL,          -- 见 app.install.operation.OperationStatus
+    actor        TEXT NOT NULL,          -- user | agent | system
+    plan_json    TEXT,                   -- InstallPlan 的 JSON 序列化
+    plan_digest  TEXT,                   -- 计划摘要（确认与执行前均重新校验）
+    binding_json TEXT,                   -- 确认所绑定的完整字段（含过期时间）
+    result_json  TEXT,
+    error        TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_operations_plugin ON operations(plugin_id);
+CREATE INDEX IF NOT EXISTS idx_operations_status ON operations(status);
+
+-- 确认令牌：只存哈希；明文仅在创建时返回一次
+CREATE TABLE IF NOT EXISTS confirmations (
+    operation_id   TEXT PRIMARY KEY,
+    token_hash     TEXT NOT NULL,
+    binding_json   TEXT NOT NULL,
+    binding_digest TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    used_at        TEXT,
+    created_at     TEXT NOT NULL
+);
+
+-- 快照：安装前对目标目录的备份（回滚用）
+CREATE TABLE IF NOT EXISTS snapshots (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT NOT NULL,
+    plugin_id    TEXT NOT NULL,
+    path         TEXT NOT NULL,          -- 被快照的绝对路径
+    backup_path  TEXT,                   -- 备份位置；NULL 表示原本不存在
+    existed      INTEGER NOT NULL,       -- 0/1
+    created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_op ON snapshots(operation_id);
+
+-- 文件归属台账：只有这里登记过的文件才允许被本系统删除 / 回滚
+CREATE TABLE IF NOT EXISTS file_ownership (
+    path         TEXT NOT NULL,
+    plugin_id    TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    action       TEXT NOT NULL,          -- create | modify
+    sha256       TEXT,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (path, operation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ownership_plugin ON file_ownership(plugin_id);
+
+-- 操作步骤日志（供任务历史页面展示真实执行轨迹）
+CREATE TABLE IF NOT EXISTS operation_logs (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    step         TEXT NOT NULL,
+    level        TEXT NOT NULL,          -- info | warn | error
+    message      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_oplogs_op ON operation_logs(operation_id);
 """
 
 

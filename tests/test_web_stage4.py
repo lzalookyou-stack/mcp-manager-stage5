@@ -361,7 +361,11 @@ def test_sse_subscriber_limit_returns_503(settings, monkeypatch):
 
 
 def test_no_write_endpoints_still_true(client: TestClient):
-    """阶段 4 增加了只读交互端点，但**写接口必须仍然为零**。"""
+    """阶段 4 的只读端点不得被改成写接口；阶段 5 的真实写接口必须要求授权。
+
+    同步更新（**不是删除**）：阶段 5 引入了安装写接口，因此额外断言
+    「未授权访问写接口必须被拒绝」。
+    """
     rt = client.runtime  # type: ignore[attr-defined]
     p = rt.plugins.upsert(
         Plugin.new(source="github:o/r", slug="demo", name="演示", kind=PluginKind.SKILL),
@@ -381,6 +385,12 @@ def test_no_write_endpoints_still_true(client: TestClient):
         assert resp.status_code in (404, 405), (
             f"{path} 不应存在写接口，实际 {resp.status_code}"
         )
+
+    # 阶段 5 写接口：无会话 / CSRF 时必须 403，绝不放行。
+    resp = client.post(
+        "/api/install/plan", headers={"Origin": ORIGIN}, json={"plugin_id": p.id}
+    )
+    assert resp.status_code == 403, resp.text
 
 
 def test_sse_requires_no_origin_but_is_readonly(client: TestClient):

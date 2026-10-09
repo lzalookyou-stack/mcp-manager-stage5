@@ -14,11 +14,19 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
+from app.install import InstallError
+from app.install.confirmation import ConfirmationError
+from app.install.operation import OperationError
+from app.install.service import (
+    InstallService,
+    InstallServiceError,
+    InstallUnavailable,
+)
 from app.runtime import Runtime
 from app.search.github_client import GitHubError
 from app.security import SecurityError, sanitize_for_log
@@ -28,6 +36,7 @@ from app.services import (
     ValidationError,
     dump_plugin,
 )
+from app.session import CSRF_HEADER, SESSION_COOKIE, SessionError
 
 # 不需要 Origin 校验的"安全方法"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -148,6 +157,36 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 "kind": getattr(exc, "kind", "error"),
                 "detail": sanitize_for_log(exc),
             },
+        )
+
+    @app.exception_handler(SessionError)
+    async def _session_rejected(_: Request, exc: SessionError) -> JSONResponse:
+        # 会话 / CSRF 校验失败：一律拒绝，绝不降级放行。
+        return _json_response(
+            403, {"error": "session_rejected", "detail": sanitize_for_log(exc)}
+        )
+
+    @app.exception_handler(InstallUnavailable)
+    async def _install_unavailable(_: Request, exc: InstallUnavailable) -> JSONResponse:
+        # 能力不可用（配置禁用 / 未装配）：403，绝不降级放行。
+        return _json_response(
+            403, {"error": "install_unavailable", "detail": sanitize_for_log(exc)}
+        )
+
+    @app.exception_handler(OperationError)
+    @app.exception_handler(ConfirmationError)
+    @app.exception_handler(InstallServiceError)
+    async def _operation_conflict(_: Request, exc: Exception) -> JSONResponse:
+        # 状态不允许 / 令牌不匹配 / 计划已变化：409，提示必须重新走确认流程。
+        return _json_response(
+            409, {"error": "operation_rejected", "detail": sanitize_for_log(exc)}
+        )
+
+    @app.exception_handler(InstallError)
+    async def _install_failed(_: Request, exc: InstallError) -> JSONResponse:
+        # 执行失败：操作状态已如实记为 failed，这里只回传失败原因。
+        return _json_response(
+            500, {"error": "install_failed", "detail": sanitize_for_log(exc)}
         )
 
     # ------------------------------------------------------------------ #
@@ -285,6 +324,134 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         rows = rt.plugins.list_audit(limit=limit)
         items = [r.__dict__ for r in rows]
         return {"count": len(items), "items": items}
+
+    # ------------------------------------------------------------------ #
+    # 阶段 5：会话 / CSRF 与写操作（安装闭环）
+    #
+    # 写操作**必须**同时满足：
+    #   1) 请求来自受信任网页（同源 Origin，由中间件保证）；
+    #   2) 携带有效会话 Cookie（HttpOnly + SameSite=Strict）；
+    #   3) 携带与该会话绑定的 CSRF 令牌（X-CSRF-Token）；
+    #   4) 目标操作已由用户通过网页明确确认（一次性确认令牌）。
+    # Agent / MCP 只能生成计划，**无法**自行确认或执行。
+    # ------------------------------------------------------------------ #
+    def _installs() -> InstallService:
+        if rt.installs is None:
+            raise InstallUnavailable("安装服务未装配")
+        return rt.installs
+
+    def _require_write_auth(request: Request) -> None:
+        if not rt.settings.install_enabled:
+            raise InstallUnavailable("安装写操作已在配置中禁用（MCPM_ENABLE_INSTALL=0）")
+        rt.sessions.verify(
+            request.cookies.get(SESSION_COOKIE),
+            request.headers.get(CSRF_HEADER),
+        )
+
+    def _plugin_id_from(payload: dict[str, Any]) -> str:
+        plugin_id = payload.get("plugin_id")
+        if not isinstance(plugin_id, str) or not plugin_id.strip():
+            raise ValidationError("plugin_id 不能为空")
+        return plugin_id.strip()
+
+    @app.get("/api/session")
+    async def create_session() -> JSONResponse:
+        """建立新会话并下发会话 Cookie 与 CSRF 令牌（明文仅此一次）。"""
+        token, csrf = rt.sessions.create()
+        resp = _json_response(
+            200, {"ok": True, "ttl_seconds": rt.settings.session_ttl_seconds}
+        )
+        resp.set_cookie(
+            SESSION_COOKIE,
+            token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+            max_age=rt.settings.session_ttl_seconds,
+        )
+        resp.headers[CSRF_HEADER] = csrf
+        return resp
+
+    @app.get("/api/operations")
+    async def list_operations(
+        plugin_id: str | None = None, limit: int = 50
+    ) -> dict[str, Any]:
+        """操作历史（只读）。"""
+        ops = _installs().list(plugin_id=plugin_id, limit=limit)
+        return {"count": len(ops), "items": [op.to_dict() for op in ops]}
+
+    @app.get("/api/operations/{operation_id}")
+    async def get_operation(operation_id: str) -> dict[str, Any]:
+        """单个操作的详情 + 确认状态 + 步骤日志（只读）。"""
+        svc = _installs()
+        op = svc.get(operation_id)
+        return {
+            "operation": op.to_dict(),
+            "confirmation": svc.confirmation(operation_id),
+            "logs": [log.__dict__ for log in svc.logs(operation_id)],
+        }
+
+    @app.post("/api/install/plan")
+    async def create_install_plan(
+        request: Request, payload: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        """生成安装计划（等待用户确认；**不写任何文件**）。"""
+        _require_write_auth(request)
+        plugin = rt.plugins.get(_plugin_id_from(payload))
+        op = _installs().create_plan(plugin, action="install", actor="user")
+        return op.to_dict()
+
+    @app.post("/api/uninstall/plan")
+    async def create_uninstall_plan(
+        request: Request, payload: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        """生成卸载计划（仅列出本系统登记并拥有的文件）。"""
+        _require_write_auth(request)
+        plugin = rt.plugins.get(_plugin_id_from(payload))
+        op = _installs().create_plan(plugin, action="uninstall", actor="user")
+        return op.to_dict()
+
+    @app.post("/api/rollback/plan")
+    async def create_rollback_plan(
+        request: Request, payload: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        """生成回滚计划（回滚最近一次成功安装）。"""
+        _require_write_auth(request)
+        plugin = rt.plugins.get(_plugin_id_from(payload))
+        op = _installs().create_plan(plugin, action="rollback", actor="user")
+        return op.to_dict()
+
+    @app.post("/api/operations/{operation_id}/confirm")
+    async def confirm_operation(request: Request, operation_id: str) -> dict[str, Any]:
+        """用户确认：生成一次性确认令牌（绑定当前计划摘要）。"""
+        _require_write_auth(request)
+        svc = _installs()
+        token = svc.confirm(operation_id, actor="user")
+        return {
+            "operation_id": operation_id,
+            "confirmation_token": token,
+            "confirmation": svc.confirmation(operation_id),
+        }
+
+    @app.post("/api/operations/{operation_id}/execute")
+    async def execute_operation(
+        request: Request,
+        operation_id: str,
+        payload: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        """执行：校验确认令牌与当前计划一致后落地变更。"""
+        _require_write_auth(request)
+        token = payload.get("confirmation_token")
+        if not isinstance(token, str) or not token:
+            raise ValidationError("confirmation_token 不能为空")
+        op = _installs().execute(operation_id, token=token, actor="user")
+        return op.to_dict()
+
+    @app.post("/api/operations/{operation_id}/cancel")
+    async def cancel_operation(request: Request, operation_id: str) -> dict[str, Any]:
+        """取消尚未执行的操作。"""
+        _require_write_auth(request)
+        return _installs().cancel(operation_id, actor="user").to_dict()
 
     # ------------------------------------------------------------------ #
     # 阶段 4：SSE 实时事件流（只读 GET）

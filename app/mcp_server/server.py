@@ -18,6 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from app import __version__
 from app.models import PluginKind
 from app.runtime import Runtime
+from app.security import sanitize_for_log
 from app.services import PluginNotFound, dump_plugin
 
 # 单次返回上限，避免 Agent 侧上下文被撑爆
@@ -82,23 +83,54 @@ def build_server(runtime: Runtime) -> MCPServer:
 
     @server.tool(
         description=(
-            "提交一个安装申请（**不会立即安装**）。"
-            "阶段 2 尚未实现：当前总是返回 not_implemented，"
-            "以避免 Agent 误以为已获得安装能力。"
+            "提交一个安装申请：生成**待用户确认**的安装计划（不会立即安装）。"
+            "Agent 只能走到这一步；确认与执行必须由用户在受信任网页上完成。"
         )
     )
     def request_install(plugin_id: str, reason: str) -> dict[str, Any]:
+        if runtime.installs is None:  # pragma: no cover - 装配缺失
+            return {"ok": False, "error": "install_unavailable"}
+        try:
+            plugin = service.get(plugin_id)
+        except PluginNotFound:
+            service.audit(
+                actor="agent",
+                action="plugin.request_install",
+                target=plugin_id,
+                outcome="denied",
+                detail="插件条目不存在",
+            )
+            return {"ok": False, "error": "not_found", "detail": plugin_id}
+        try:
+            op = runtime.installs.create_plan(plugin, action="install", actor="agent")
+        except Exception as exc:  # noqa: BLE001 - 如实回报失败原因，绝不伪成功
+            service.audit(
+                actor="agent",
+                action="plugin.request_install",
+                target=plugin_id,
+                outcome="denied",
+                detail=sanitize_for_log(exc),
+            )
+            return {
+                "ok": False,
+                "error": "plan_rejected",
+                "detail": sanitize_for_log(exc),
+            }
         service.audit(
             actor="agent",
             action="plugin.request_install",
             target=plugin_id,
-            outcome="denied",
-            detail=f"阶段2未实现；reason={reason!r}",
+            outcome="ok",
+            detail=f"已生成待确认计划 operation_id={op.id}",
         )
         return {
-            "ok": False,
-            "error": "not_implemented",
-            "detail": "安装申请将在阶段 5 实现；当前不会产生任何安装行为。",
+            "ok": True,
+            "operation_id": op.id,
+            "status": op.status,
+            "detail": (
+                "安装计划已生成，等待用户在网页控制台确认；"
+                "Agent 无法自行确认或执行。"
+            ),
         }
 
     return server
