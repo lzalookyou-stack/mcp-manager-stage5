@@ -36,7 +36,7 @@
 | 2 | https://github.com/lzalookyou-stack/mcp-manager-stage2 | 交付提交 `015fdcb521eea18abba32d940ba14fec9cc992ef`；状态回填提交 `b742dcb` | ✅ 已推送（远端 `refs/heads/main` 已回读核对，33 文件树经 API 核验） |
 | 3 | https://github.com/lzalookyou-stack/mcp-manager-stage3 | 交付提交 `2d4522bece572ca836dde936d30d8da01f8e99c6`；状态回填提交 `2c8684c7b773ceb6781aabbe7009b7a86a457eb7` | ✅ 已推送（远端 `refs/heads/main` 已回读核对 = 本地 HEAD，45 blob / 11 tree，`truncated: false`） |
 | 4 | https://github.com/lzalookyou-stack/mcp-manager-stage4 | 交付提交 `ca56e1a4ec0de9e955d323b1899c2b22989e406a`；状态回填提交 `1b59dfdbc74fdf36844690ce25e1e4b11d3f1c94` | ✅ 已推送（远端 `refs/heads/main` 已回读核对 = 本地 HEAD，48 blob，`truncated: false`） |
-| 5 | https://github.com/lzalookyou-stack/mcp-manager-stage5 | 交付提交 `d4de5865e3d0246ae92810971a1e8136ba414bff` | ✅ 已推送（远端 `refs/heads/main` 已回读核对 = 本地 HEAD，62 blob / 12 tree，`truncated: false`，本地跟踪文件与远端文件树逐一比对无差异） |
+| 5 | https://github.com/lzalookyou-stack/mcp-manager-stage5 | 交付提交 `d4de5865e3d0246ae92810971a1e8136ba414bff`；状态回填提交 `161010c2f4f4583280e195b01c71868bbe6cba20` | ✅ 已推送（远端 `refs/heads/main` 已回读核对 = 本地 HEAD，62 blob / 12 tree，`truncated: false`，本地跟踪文件与远端文件树逐一比对无差异） |
 | 6 | （推送后回填） | （推送后回填） | — |
 | 7 | （推送后回填） | （推送后回填） | — |
 | 8 | （推送后回填） | （推送后回填） | — |
